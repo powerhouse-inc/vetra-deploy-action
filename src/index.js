@@ -1,0 +1,195 @@
+#!/usr/bin/env node
+// Orchestrates one run of the Vetra deploy action: classify the ref, exchange
+// OIDC for Renown bearer tokens, publish packages, optionally build/push a
+// FUSION image, call deployApp, and (by default) wait for it to go READY.
+
+import { classifyRef } from './ref.js';
+import {
+  deriveVersion,
+  distTagForClassification,
+  listPackageDirs,
+  readPackageJson,
+  registryForClassification,
+  stripPrerelease,
+} from './version.js';
+import { getPullRequestHeadSha } from './github-event.js';
+import { requestOidcToken } from './oidc.js';
+import { exchangeToken } from './exchange.js';
+import { publishPackage } from './publish.js';
+import { buildImageRef, buildAndPushImage } from './image.js';
+import { deployApp, fetchAppRegistryCredentials, pollDeployment } from './deploy.js';
+import { writeSummary } from './summary.js';
+import { mask, notice, setFailed, setOutput, warning } from './util.js';
+
+const RENOWN_OIDC_AUDIENCE = 'https://renown.vetra.io';
+
+function env(name, fallback = '') {
+  const v = process.env[name];
+  return v === undefined || v === '' ? fallback : v;
+}
+
+function requireEnv(name) {
+  const v = process.env[name];
+  if (!v) throw new Error(`required input '${name}' is missing`);
+  return v;
+}
+
+function emptyOutputs() {
+  setOutput('deployment-id', '');
+  setOutput('environment-url', '');
+  setOutput('app-url', '');
+  setOutput('version', '');
+}
+
+async function main() {
+  const appId = requireEnv('INPUT_APP_ID');
+  const vetraUrl = env('INPUT_VETRA_URL', 'https://switchboard.vetra.io');
+  const renownUrl = env('INPUT_RENOWN_URL', 'https://switchboard.renown.vetra.io');
+  const productionBranch = env('INPUT_PRODUCTION_BRANCH', 'main');
+  const packageDirsInput = env('INPUT_PACKAGE_DIRS', '.');
+  const fusionDockerfile = env('INPUT_FUSION_DOCKERFILE', '');
+  const fusionContext = env('INPUT_FUSION_CONTEXT', '.');
+  const fusionImageName = env('INPUT_FUSION_IMAGE_NAME', 'app');
+  const wait = env('INPUT_WAIT', 'true') !== 'false';
+  const timeoutMinutes = Number(env('INPUT_TIMEOUT_MINUTES', '15'));
+
+  const ref = env('GITHUB_REF');
+  const eventName = env('GITHUB_EVENT_NAME');
+  const classification = classifyRef({ ref, productionBranch });
+
+  if (classification.kind === 'skip') {
+    notice(`Vetra: ${classification.reason} — skipping deploy.`);
+    emptyOutputs();
+    return;
+  }
+
+  // For pull_request runs, GITHUB_SHA is the ephemeral merge commit; the
+  // deploy must reference the PR's real head commit.
+  let sha = env('GITHUB_SHA');
+  if (eventName === 'pull_request') {
+    const headSha = getPullRequestHeadSha(process.env.GITHUB_EVENT_PATH);
+    if (headSha) sha = headSha;
+  }
+  if (!sha) throw new Error('could not determine a commit sha (GITHUB_SHA / pull_request head.sha)');
+  const sha7 = sha.slice(0, 7);
+  const sha12 = sha.slice(0, 12);
+
+  const registryUrl = registryForClassification(classification);
+  const distTag = distTagForClassification(classification);
+
+  let oidcToken;
+  try {
+    oidcToken = await requestOidcToken(RENOWN_OIDC_AUDIENCE);
+  } catch (err) {
+    setFailed(err.message);
+    return;
+  }
+  mask(oidcToken);
+
+  const packageDirs = listPackageDirs(packageDirsInput);
+  const publishedPackages = [];
+
+  if (packageDirs.length > 0) {
+    const registryToken = await exchangeToken(renownUrl, oidcToken, registryUrl);
+    mask(registryToken);
+
+    for (const dir of packageDirs) {
+      const pkg = readPackageJson(dir);
+      if (!pkg) {
+        warning(`Vetra: no package.json found in '${dir}' — skipping.`);
+        continue;
+      }
+      if (pkg.private) {
+        warning(`Vetra: '${dir}' (${pkg.name ?? 'unnamed'}) is private — skipping publish.`);
+        continue;
+      }
+      const base = stripPrerelease(pkg.version);
+      const version =
+        classification.kind === 'release'
+          ? classification.tagVersion
+          : deriveVersion(base, classification, { runNumber: env('GITHUB_RUN_NUMBER'), sha7 });
+
+      publishPackage({ dir, version, registryUrl, distTag, token: registryToken });
+      publishedPackages.push({ name: pkg.name, version });
+    }
+  }
+
+  if (classification.kind === 'release') {
+    notice(`Vetra: published release ${classification.tagVersion} to ${distTag}; tags are publish-only in v1 (no deploy).`);
+    setOutput('deployment-id', '');
+    setOutput('environment-url', '');
+    setOutput('app-url', '');
+    setOutput('version', classification.tagVersion);
+    return;
+  }
+
+  const switchboardToken = await exchangeToken(renownUrl, oidcToken, vetraUrl);
+  mask(switchboardToken);
+
+  let imageTag = null;
+  if (fusionDockerfile) {
+    const creds = await fetchAppRegistryCredentials(vetraUrl, switchboardToken, appId);
+    mask(creds.password);
+
+    const imageRef = buildImageRef({
+      registry: creds.registry,
+      project: creds.project,
+      imageName: fusionImageName,
+      sha12,
+    });
+    const registryHost = creds.registry.replace(/^https?:\/\//, '').replace(/\/+$/, '');
+
+    buildAndPushImage({
+      dockerfile: fusionDockerfile,
+      context: fusionContext,
+      imageRef,
+      buildArgs: { NEXT_DEPLOYMENT_ID: `sha-${sha12}` },
+      registryHost,
+      username: creds.username,
+      password: creds.password,
+    });
+    imageTag = `sha-${sha12}`;
+  }
+
+  const deployInput = {
+    appId,
+    kind: classification.kind === 'production' ? 'PRODUCTION' : 'PREVIEW',
+    prNumber: classification.kind === 'preview' ? classification.prNumber : null,
+    gitRef: ref,
+    sha,
+    runUrl: `${env('GITHUB_SERVER_URL')}/${env('GITHUB_REPOSITORY')}/actions/runs/${env('GITHUB_RUN_ID')}`,
+    actorGithub: env('GITHUB_ACTOR'),
+    packages: publishedPackages,
+    imageTag,
+  };
+
+  const deployment = await deployApp(vetraUrl, switchboardToken, deployInput);
+  const runVersion = publishedPackages[0]?.version ?? '';
+  setOutput('deployment-id', deployment.id);
+  setOutput('version', runVersion);
+
+  if (!wait) {
+    setOutput('environment-url', deployment.urls?.app ?? '');
+    setOutput('app-url', deployment.urls?.app ?? '');
+    writeSummary(deployment);
+    return;
+  }
+
+  const final = await pollDeployment(vetraUrl, switchboardToken, deployment.id, { timeoutMinutes });
+  setOutput('environment-url', final.urls?.app ?? '');
+  setOutput('app-url', final.urls?.app ?? '');
+  writeSummary(final);
+
+  if (final.status === 'FAILED') {
+    setFailed(`Vetra deployment failed: ${final.error ?? 'unknown error'}`);
+  } else if (final.status === 'TIMEOUT') {
+    setFailed(`Vetra deployment did not become READY within ${timeoutMinutes} minutes (last status: DEPLOYING).`);
+  } else if (final.status === 'SUPERSEDED') {
+    notice('Vetra: deployment was superseded by a newer run for the same environment; treating this run as successful.');
+  }
+}
+
+main().catch((err) => {
+  setFailed(err?.stack || String(err?.message || err));
+  process.exitCode = 1;
+});
