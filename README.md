@@ -5,8 +5,8 @@ FUSION image, and deploys a [Vetra App](https://vetra.io) — production on push
 production branch, a slim preview environment per pull request.
 
 It authenticates with no long-lived secrets: it exchanges the run's GitHub OIDC token for a
-short-lived Renown bearer token (one per registry/switchboard audience it needs), scoped to
-exactly this repository, ref, and run.
+short-lived Renown bearer token per audience it needs (the target npm registry, and the vetra-apps
+CI API), scoped to exactly this repository, ref, and run.
 
 ## What it does
 
@@ -19,18 +19,19 @@ On every run the action:
    - `refs/tags/v*` → **release** (publish-only, see below)
    - anything else → skipped, with a `::notice::` and no further steps.
 3. Requests a GitHub Actions OIDC ID token (audience `https://renown.vetra.io`) and exchanges it
-   with Renown for a bearer token per audience it actually needs (the target npm registry, and —
-   for production/preview — the Vetra switchboard).
+   with Renown for a bearer token per audience it actually needs: the target npm registry, and —
+   for production/preview — the vetra-apps CI API, audience
+   `<vetra-url>/api/@powerhousedao/vetra-cloud-package/apps`.
 4. Publishes each directory in `package-dirs` whose `package.json` isn't `"private": true`:
    writes a scratch `.npmrc` scoped to the target registry, bumps the version locally
    (`npm version --no-git-tag-version`, never committed), runs `pnpm pack`, then
    `npm publish <tarball>`.
-5. If `fusion-dockerfile` is set, fetches a push-only Harbor robot for the App
-   (`appRegistryCredentials`), then builds and pushes
+5. If `fusion-dockerfile` is set, calls `POST .../ci/registry-credentials` for a push-only Harbor
+   robot of the App's project, then builds and pushes
    `cr.vetra.io/<project>/<image-name>:sha-<sha12>` with `--build-arg NEXT_DEPLOYMENT_ID=sha-<sha12>`.
-6. Calls `deployApp` and (unless `wait: false`) polls `appDeployment` every 10s until it reaches
-   `READY`/`FAILED`/`SUPERSEDED`, or the timeout elapses. Writes a job summary with the app,
-   Connect, and switchboard URLs, and sets the action's outputs.
+6. Calls `POST .../ci/deploy` and (unless `wait: false`) polls `GET .../ci/deployments/:id` every
+   10s until it reaches `READY`/`FAILED`/`SUPERSEDED`, or the timeout elapses. Writes a job
+   summary with the app, Connect, and switchboard URLs, and sets the action's outputs.
 
 A release tag (`v*`) only publishes — it does not call `deployApp`. Production/preview releases
 never touch secrets or packages from a **forked** repository's pull request: GitHub does not
@@ -43,7 +44,7 @@ also guards this with an `if:` on the job.
 | Input | Default | Description |
 |---|---|---|
 | `app-id` | _(required)_ | The Vetra App id, from the app's page on vetra.io. |
-| `vetra-url` | `https://switchboard.vetra.io` | Vetra switchboard URL (GraphQL at `<vetra-url>/graphql`). |
+| `vetra-url` | `https://switchboard.vetra.io` | Vetra switchboard URL (the CI API lives at `<vetra-url>/api/@powerhousedao/vetra-cloud-package/apps/ci`). |
 | `renown-url` | `https://switchboard.renown.vetra.io` | Renown switchboard URL used for the OIDC exchange. |
 | `production-branch` | `main` | Branch that deploys to the production environment. |
 | `package-dirs` | `.` | Newline/space-separated list of directories with a `package.json` to publish. Empty string disables publishing. |
@@ -177,9 +178,10 @@ new versions — check the App's Deployments tab on vetra.io, or the environment
 status, for the underlying error. Increase `timeout-minutes` only if the environment is simply
 slow to come up (e.g. a cold image pull), not to paper over a real failure.
 
-**GraphQL errors.** The action surfaces `extensions.code` alongside the message, e.g.
-`[PREVIEWS_DISABLED] previews are disabled for this App` or
-`[FORBIDDEN] caller is not this App's identity`. These map to the vetra-apps subgraph's error
+**CI API errors.** Every endpoint returns a non-2xx response with a JSON body
+`{ "error": "<CODE>", "message": "<description>" }` on failure; the action prints and fails on
+`<CODE>: <message>`, e.g. `PREVIEWS_DISABLED: previews are disabled for this App` or
+`FORBIDDEN: caller is not this App's identity`. These map to the vetra-apps CI API's error
 codes — see the Vetra docs for what triggers each one.
 
 ## Local development
@@ -189,7 +191,7 @@ npm test   # node --test, no network/build dependencies
 ```
 
 All logic that doesn't require real network/process I/O (ref classification, version
-derivation, PR number parsing, GraphQL error formatting, image ref construction, deployment
+derivation, PR number parsing, CI API error formatting, image ref construction, deployment
 polling) is covered by plain `node --test` unit tests in `test/`, with `fetch`/`child_process`
 faked at the call site. There is no build step and no npm dependency — `src/` is plain Node 22
 ESM using global `fetch` and `node:child_process`.
