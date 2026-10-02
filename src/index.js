@@ -18,6 +18,7 @@ import { exchangeToken } from './exchange.js';
 import { publishPackage } from './publish.js';
 import { buildImageRef, buildAndPushImage } from './image.js';
 import { deployApp, fetchAppRegistryCredentials, pollDeployment } from './deploy.js';
+import { appsAudience } from './rest.js';
 import { writeSummary } from './summary.js';
 import { mask, notice, setFailed, setOutput, warning } from './util.js';
 
@@ -123,12 +124,15 @@ async function main() {
     return;
   }
 
-  const switchboardToken = await exchangeToken(renownUrl, oidcToken, vetraUrl);
-  mask(switchboardToken);
+  // The CI deploy API (registry-credentials/deploy/deployments) is a separate
+  // audience from the publish registries: it identifies this workload to the
+  // vetra-apps subgraph itself, not to an npm registry.
+  const appsToken = await exchangeToken(renownUrl, oidcToken, appsAudience(vetraUrl));
+  mask(appsToken);
 
   let imageTag = null;
   if (fusionDockerfile) {
-    const creds = await fetchAppRegistryCredentials(vetraUrl, switchboardToken, appId);
+    const creds = await fetchAppRegistryCredentials(vetraUrl, appsToken, appId);
     mask(creds.password);
 
     const imageRef = buildImageRef({
@@ -163,7 +167,7 @@ async function main() {
     imageTag,
   };
 
-  const deployment = await deployApp(vetraUrl, switchboardToken, deployInput);
+  const deployment = await deployApp(vetraUrl, appsToken, deployInput);
   const runVersion = publishedPackages[0]?.version ?? '';
   setOutput('deployment-id', deployment.id);
   setOutput('version', runVersion);
@@ -175,7 +179,7 @@ async function main() {
     return;
   }
 
-  const final = await pollDeployment(vetraUrl, switchboardToken, deployment.id, { timeoutMinutes });
+  const final = await pollDeployment(vetraUrl, appsToken, deployment.id, { timeoutMinutes });
   setOutput('environment-url', final.urls?.app ?? '');
   setOutput('app-url', final.urls?.app ?? '');
   writeSummary(final);

@@ -10,7 +10,7 @@ inputs:
     description: 'The Vetra App id, from the app page on vetra.io.'
     required: true
   vetra-url:
-    description: 'Vetra switchboard URL (GraphQL endpoint lives at <vetra-url>/graphql).'
+    description: 'Vetra switchboard URL (the CI API lives at <vetra-url>/api/@powerhousedao/vetra-cloud-package/apps/ci).'
     required: false
     default: 'https://switchboard.vetra.io'
   renown-url:
