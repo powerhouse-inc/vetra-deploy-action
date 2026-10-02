@@ -40,7 +40,7 @@ const TERMINAL_STATUSES = new Set(['READY', 'FAILED', 'SUPERSEDED']);
  * status, or returns a synthetic `{ status: 'TIMEOUT' }` result once
  * `timeoutMinutes` elapses.
  * @param {string} vetraUrl
- * @param {string} token
+ * @param {string | (() => Promise<string>)} token a token, or a getter asked before every poll
  * @param {string} id
  * @param {{
  *   timeoutMinutes?: number, intervalMs?: number,
@@ -54,7 +54,8 @@ export async function pollDeployment(vetraUrl, token, id, opts = {}) {
   let last = null;
 
   while (now() < deadline) {
-    last = await fetchAppDeployment(vetraUrl, token, id, { fetchImpl });
+    const current = typeof token === 'function' ? await token() : token;
+    last = await fetchAppDeployment(vetraUrl, current, id, { fetchImpl });
     if (last && TERMINAL_STATUSES.has(last.status)) return last;
     await sleep(intervalMs);
   }

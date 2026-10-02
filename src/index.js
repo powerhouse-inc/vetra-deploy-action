@@ -19,6 +19,7 @@ import { publishPackage } from './publish.js';
 import { buildImageRef, buildAndPushImage } from './image.js';
 import { deployApp, fetchAppRegistryCredentials, pollDeployment } from './deploy.js';
 import { appsAudience } from './rest.js';
+import { createTokenSource } from './token-source.js';
 import { writeSummary } from './summary.js';
 import { mask, notice, setFailed, setOutput, warning } from './util.js';
 
@@ -127,12 +128,19 @@ async function main() {
   // The CI deploy API (registry-credentials/deploy/deployments) is a separate
   // audience from the publish registries: it identifies this workload to the
   // vetra-apps subgraph itself, not to an npm registry.
-  const appsToken = await exchangeToken(renownUrl, oidcToken, appsAudience(vetraUrl));
-  mask(appsToken);
+  // Fresh GitHub OIDC token + exchange every few minutes: the image build and
+  // the deploy wait together can outlive one 10-minute Renown token.
+  const appsToken = createTokenSource(async () => {
+    const oidc = await requestOidcToken(RENOWN_OIDC_AUDIENCE);
+    mask(oidc);
+    const fresh = await exchangeToken(renownUrl, oidc, appsAudience(vetraUrl));
+    mask(fresh);
+    return fresh;
+  });
 
   let imageTag = null;
   if (fusionDockerfile) {
-    const creds = await fetchAppRegistryCredentials(vetraUrl, appsToken, appId);
+    const creds = await fetchAppRegistryCredentials(vetraUrl, await appsToken(), appId);
     mask(creds.password);
 
     const imageRef = buildImageRef({
@@ -152,7 +160,8 @@ async function main() {
       username: creds.username,
       password: creds.password,
     });
-    imageTag = `sha-${sha12}`;
+    // The full reference: the image name is the App's choice, not a backend default.
+    imageTag = imageRef;
   }
 
   const deployInput = {
@@ -167,7 +176,7 @@ async function main() {
     imageTag,
   };
 
-  const deployment = await deployApp(vetraUrl, appsToken, deployInput);
+  const deployment = await deployApp(vetraUrl, await appsToken(), deployInput);
   const runVersion = publishedPackages[0]?.version ?? '';
   setOutput('deployment-id', deployment.id);
   setOutput('version', runVersion);

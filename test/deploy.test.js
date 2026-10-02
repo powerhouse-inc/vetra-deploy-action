@@ -117,3 +117,19 @@ test('pollDeployment returns a synthetic TIMEOUT status once the deadline passes
   assert.equal(result.status, 'TIMEOUT');
   assert.equal(result.id, 'd1');
 });
+
+test('pollDeployment asks a token getter for a fresh token on every poll', async () => {
+  const seen = [];
+  let polls = 0;
+  const fetchImpl = async (_url, init) => {
+    seen.push(init.headers.authorization ?? init.headers.Authorization);
+    polls += 1;
+    return new Response(JSON.stringify({ id: 'd1', status: polls < 2 ? 'DEPLOYING' : 'READY' }), { status: 200 });
+  };
+  let n = 0;
+  const result = await pollDeployment('https://switchboard.vetra.io', async () => `tok-${++n}`, 'd1', {
+    intervalMs: 0, sleep: async () => {}, fetchImpl,
+  });
+  assert.equal(result.status, 'READY');
+  assert.deepEqual(seen, ['Bearer tok-1', 'Bearer tok-2']);
+});
