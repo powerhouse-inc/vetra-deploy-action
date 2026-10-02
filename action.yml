@@ -1,0 +1,101 @@
+name: 'Vetra Deploy'
+description: 'Publish packages, build a FUSION image, and deploy a Vetra App from GitHub Actions'
+author: 'Powerhouse'
+branding:
+  icon: 'upload-cloud'
+  color: 'purple'
+
+inputs:
+  app-id:
+    description: 'The Vetra App id, from the app page on vetra.io.'
+    required: true
+  vetra-url:
+    description: 'Vetra switchboard URL (GraphQL endpoint lives at <vetra-url>/graphql).'
+    required: false
+    default: 'https://switchboard.vetra.io'
+  renown-url:
+    description: 'Renown switchboard URL, used for the OIDC-to-bearer token exchange.'
+    required: false
+    default: 'https://switchboard.renown.vetra.io'
+  production-branch:
+    description: 'The branch that deploys to the production environment.'
+    required: false
+    default: 'main'
+  package-dirs:
+    description: >
+      Newline- or space-separated list of directories containing a package.json to publish.
+      Set to an empty string to disable publishing entirely.
+    required: false
+    default: '.'
+  build-command:
+    description: 'Command run before publishing. Set to an empty string to skip the build step.'
+    required: false
+    default: 'pnpm build'
+  install-command:
+    description: 'Command used to install dependencies. Set to an empty string to skip.'
+    required: false
+    default: 'pnpm install --frozen-lockfile'
+  fusion-dockerfile:
+    description: >
+      Path to a Dockerfile for a FUSION image. Leave empty to skip the image build/push.
+    required: false
+    default: ''
+  fusion-context:
+    description: 'Docker build context for the FUSION image.'
+    required: false
+    default: '.'
+  fusion-image-name:
+    description: 'Image name (without registry/project) used for the FUSION image.'
+    required: false
+    default: 'app'
+  wait:
+    description: 'Wait for the deployment to reach a terminal status before finishing.'
+    required: false
+    default: 'true'
+  timeout-minutes:
+    description: 'Minutes to wait for the deployment to become READY before failing the job.'
+    required: false
+    default: '15'
+
+outputs:
+  deployment-id:
+    description: 'The id of the created AppDeployment (empty when the run published a tag or was skipped).'
+    value: ${{ steps.deploy.outputs.deployment-id }}
+  environment-url:
+    description: "The deployed environment's app URL."
+    value: ${{ steps.deploy.outputs.environment-url }}
+  app-url:
+    description: 'Alias of environment-url.'
+    value: ${{ steps.deploy.outputs.app-url }}
+  version:
+    description: 'The version published/derived for this run.'
+    value: ${{ steps.deploy.outputs.version }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install dependencies
+      if: inputs.install-command != ''
+      shell: bash
+      run: ${{ inputs.install-command }}
+
+    - name: Build
+      if: inputs.build-command != ''
+      shell: bash
+      run: ${{ inputs.build-command }}
+
+    - name: Vetra deploy
+      id: deploy
+      shell: bash
+      run: node "${{ github.action_path }}/src/index.js"
+      env:
+        INPUT_APP_ID: ${{ inputs.app-id }}
+        INPUT_VETRA_URL: ${{ inputs.vetra-url }}
+        INPUT_RENOWN_URL: ${{ inputs.renown-url }}
+        INPUT_PRODUCTION_BRANCH: ${{ inputs.production-branch }}
+        INPUT_PACKAGE_DIRS: ${{ inputs.package-dirs }}
+        INPUT_FUSION_DOCKERFILE: ${{ inputs.fusion-dockerfile }}
+        INPUT_FUSION_CONTEXT: ${{ inputs.fusion-context }}
+        INPUT_FUSION_IMAGE_NAME: ${{ inputs.fusion-image-name }}
+        INPUT_WAIT: ${{ inputs.wait }}
+        INPUT_TIMEOUT_MINUTES: ${{ inputs.timeout-minutes }}

@@ -1,0 +1,14 @@
+{
+  "name": "vetra-deploy-action",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Composite GitHub Action that publishes packages, builds a FUSION image, and deploys a Vetra App.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "license": "MIT"
+}

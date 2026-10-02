@@ -1,0 +1,4 @@
+node_modules/
+*.tgz
+.npmrc.vetra-deploy-action
+.DS_Store
