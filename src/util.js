@@ -1,6 +1,6 @@
 // Small process/IO helpers shared across the action's scripts. Kept thin and
 // side-effecting on purpose (logging, env files, subprocess exec) — the pure
-// decision logic lives in ref.js / version.js / graphql.js / image.js.
+// decision logic lives in ref.js / version.js / rest.js / image.js.
 
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
