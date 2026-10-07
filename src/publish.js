@@ -2,6 +2,10 @@
 // `npm version` (local, no git tag), `pnpm pack` (so workspace:/catalog:
 // protocols get resolved to real version ranges before packing), and
 // `npm publish` of the resulting tarball.
+//
+// Only `npm publish` is given --userconfig: it is the step that authenticates.
+// Packing never contacts a registry, and pnpm parses its own pack options
+// strictly, rejecting --userconfig with "Unknown option".
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -33,7 +37,7 @@ export function extractTarballName(packOutput, dir) {
  * repo's real .npmrc and is never printed.
  * @param {{ dir: string, version: string, registryUrl: string, distTag: string, token: string }} opts
  */
-export function publishPackage({ dir, version, registryUrl, distTag, token }) {
+export function publishPackage({ dir, version, registryUrl, distTag, token }, exec = execCmd) {
   const normalizedRegistry = registryUrl.replace(/\/+$/, '');
   const host = normalizedRegistry.replace(/^https?:\/\//, '');
   const npmrcPath = path.join(dir, '.npmrc.vetra-deploy-action');
@@ -41,12 +45,14 @@ export function publishPackage({ dir, version, registryUrl, distTag, token }) {
 
   fs.writeFileSync(npmrcPath, npmrcContents, { mode: 0o600 });
   try {
-    execCmd('npm', ['version', version, '--no-git-tag-version', '--allow-same-version'], { cwd: dir });
+    exec('npm', ['version', version, '--no-git-tag-version', '--allow-same-version'], { cwd: dir });
 
-    const packOutput = execCmd('pnpm', ['pack', '--userconfig', npmrcPath], { cwd: dir });
+    // No --userconfig here: pack writes a tarball and never talks to a registry,
+    // and pnpm rejects the flag outright.
+    const packOutput = exec('pnpm', ['pack'], { cwd: dir });
     const tarball = extractTarballName(packOutput, dir);
 
-    execCmd(
+    exec(
       'npm',
       ['publish', tarball, '--registry', normalizedRegistry, '--tag', distTag, '--userconfig', npmrcPath],
       { cwd: dir },
