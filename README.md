@@ -26,9 +26,15 @@ On every run the action:
    writes a scratch `.npmrc` scoped to the target registry, bumps the version locally
    (`npm version --no-git-tag-version`, never committed), runs `pnpm pack`, then
    `npm publish <tarball>`.
-5. If `fusion-dockerfile` is set, calls `POST .../ci/registry-credentials` for a push-only Harbor
-   robot of the App's project, then builds and pushes
-   `cr.vetra.io/<project>/<image-name>:sha-<sha12>` with `--build-arg NEXT_DEPLOYMENT_ID=sha-<sha12>`.
+5. If `fusion-apps` (or `fusion-dockerfile`) is set, calls `POST .../ci/registry-credentials` for a
+   push-only Harbor robot of the App's project, then builds and pushes
+   `cr.vetra.io/<project>/<image-name>:sha-<sha12>` **for each entry**, with
+   `--build-arg NEXT_DEPLOYMENT_ID=sha-<sha12>`. The first entry is the image the deployment
+   references; the rest are recorded on the App.
+5b. Records every published package and pushed image on the App's document via
+   `POST .../ci/artifacts`, moving the `LATEST` (tag release) or `STAGING` (production branch)
+   channel to it. Previews claim no channel. A failed registration warns and does not fail the
+   run: the package is already published by then.
 6. Calls `POST .../ci/deploy` and (unless `wait: false`) polls `GET .../ci/deployments/:id` every
    10s until it reaches `READY`/`FAILED`/`SUPERSEDED`, or the timeout elapses. Writes a job
    summary with the app, Connect, and switchboard URLs, and sets the action's outputs.
@@ -50,7 +56,8 @@ also guards this with an `if:` on the job.
 | `package-dirs` | `.` | Newline/space-separated list of directories with a `package.json` to publish. Empty string disables publishing. |
 | `build-command` | `pnpm build` | Build command, run before publishing. Empty string skips it. |
 | `install-command` | `pnpm install --frozen-lockfile` | Install command. Empty string skips it. |
-| `fusion-dockerfile` | _(empty)_ | Path to a Dockerfile for a FUSION image. Empty disables the image build/push. |
+| `fusion-apps` | _(empty)_ | One image per line: `<image-name>: <dockerfile> [build-context]`. Blank lines and `#` comments ignored. Takes precedence over the single-image inputs below. |
+| `fusion-dockerfile` | _(empty)_ | Path to a Dockerfile for a FUSION image. Empty disables the image build/push. A one-entry shorthand for `fusion-apps`. |
 | `fusion-context` | `.` | Docker build context for the FUSION image. |
 | `fusion-image-name` | `app` | Image name (without registry/project) for the FUSION image. |
 | `wait` | `true` | Wait for the deployment to reach a terminal status before finishing. |

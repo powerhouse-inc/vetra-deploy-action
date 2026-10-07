@@ -17,6 +17,8 @@ import { requestOidcToken } from './oidc.js';
 import { exchangeToken } from './exchange.js';
 import { publishPackage } from './publish.js';
 import { buildImageRef, buildAndPushImage } from './image.js';
+import { parseFusionApps } from './fusion-apps.js';
+import { channelForClassification, recordArtifact } from './artifacts.js';
 import { deployApp, fetchAppRegistryCredentials, pollDeployment } from './deploy.js';
 import { appsAudience } from './rest.js';
 import { createTokenSource } from './token-source.js';
@@ -52,6 +54,7 @@ async function main() {
   const fusionDockerfile = env('INPUT_FUSION_DOCKERFILE', '');
   const fusionContext = env('INPUT_FUSION_CONTEXT', '.');
   const fusionImageName = env('INPUT_FUSION_IMAGE_NAME', 'app');
+  const fusionAppsInput = env('INPUT_FUSION_APPS', '');
   const wait = env('INPUT_WAIT', 'true') !== 'false';
   const timeoutMinutes = Number(env('INPUT_TIMEOUT_MINUTES', '15'));
 
@@ -88,6 +91,23 @@ async function main() {
   }
   mask(oidcToken);
 
+  // The CI deploy API (registry-credentials/deploy/deployments/artifacts) is a
+  // separate audience from the publish registries: it identifies this workload
+  // to the vetra-apps subgraph itself, not to an npm registry.
+  // Fresh GitHub OIDC token + exchange every few minutes: the image build and
+  // the deploy wait together can outlive one 10-minute Renown token.
+  // Created before the release early-return, and lazy, so a tag run can still
+  // record its artifacts without minting a token it never uses.
+  const appsToken = createTokenSource(async () => {
+    const oidc = await requestOidcToken(RENOWN_OIDC_AUDIENCE);
+    mask(oidc);
+    const fresh = await exchangeToken(renownUrl, oidc, appsAudience(vetraUrl));
+    mask(fresh);
+    return fresh;
+  });
+  const channel = channelForClassification(classification);
+  const runId = env('GITHUB_RUN_ID');
+
   const packageDirs = listPackageDirs(packageDirsInput);
   const publishedPackages = [];
 
@@ -112,7 +132,18 @@ async function main() {
           : deriveVersion(base, classification, { runNumber: env('GITHUB_RUN_NUMBER'), sha7 });
 
       publishPackage({ dir, version, registryUrl, distTag, token: registryToken });
-      publishedPackages.push({ name: pkg.name, version });
+      publishedPackages.push({ name: pkg.name, version, registryUrl });
+
+      await recordArtifact(vetraUrl, await appsToken(), {
+        appId,
+        kind: 'PACKAGE',
+        name: pkg.name,
+        version,
+        reference: `${registryUrl.replace(/\/+$/, '')}/${pkg.name}`,
+        commitSha: sha,
+        runId,
+        channel,
+      });
     }
   }
 
@@ -125,43 +156,52 @@ async function main() {
     return;
   }
 
-  // The CI deploy API (registry-credentials/deploy/deployments) is a separate
-  // audience from the publish registries: it identifies this workload to the
-  // vetra-apps subgraph itself, not to an npm registry.
-  // Fresh GitHub OIDC token + exchange every few minutes: the image build and
-  // the deploy wait together can outlive one 10-minute Renown token.
-  const appsToken = createTokenSource(async () => {
-    const oidc = await requestOidcToken(RENOWN_OIDC_AUDIENCE);
-    mask(oidc);
-    const fresh = await exchangeToken(renownUrl, oidc, appsAudience(vetraUrl));
-    mask(fresh);
-    return fresh;
+  const fusionApps = parseFusionApps(fusionAppsInput, {
+    dockerfile: fusionDockerfile,
+    imageName: fusionImageName,
+    context: fusionContext,
   });
 
   let imageTag = null;
-  if (fusionDockerfile) {
+  if (fusionApps.length > 0) {
     const creds = await fetchAppRegistryCredentials(vetraUrl, await appsToken(), appId);
     mask(creds.password);
-
-    const imageRef = buildImageRef({
-      registry: creds.registry,
-      project: creds.project,
-      imageName: fusionImageName,
-      sha12,
-    });
     const registryHost = creds.registry.replace(/^https?:\/\//, '').replace(/\/+$/, '');
 
-    buildAndPushImage({
-      dockerfile: fusionDockerfile,
-      context: fusionContext,
-      imageRef,
-      buildArgs: { NEXT_DEPLOYMENT_ID: `sha-${sha12}` },
-      registryHost,
-      username: creds.username,
-      password: creds.password,
-    });
-    // The full reference: the image name is the App's choice, not a backend default.
-    imageTag = imageRef;
+    for (const app of fusionApps) {
+      const imageRef = buildImageRef({
+        registry: creds.registry,
+        project: creds.project,
+        imageName: app.name,
+        sha12,
+      });
+
+      buildAndPushImage({
+        dockerfile: app.dockerfile,
+        context: app.context,
+        imageRef,
+        buildArgs: { NEXT_DEPLOYMENT_ID: `sha-${sha12}` },
+        registryHost,
+        username: creds.username,
+        password: creds.password,
+      });
+
+      await recordArtifact(vetraUrl, await appsToken(), {
+        appId,
+        kind: 'FUSION_IMAGE',
+        name: app.name,
+        version: `sha-${sha12}`,
+        reference: imageRef,
+        commitSha: sha,
+        runId,
+        channel,
+      });
+
+      // The deployment still references ONE image. The first entry is the App's
+      // own service; the rest are recorded so a licence template can offer them.
+      // The full reference: the image name is the App's choice, not a backend default.
+      if (imageTag === null) imageTag = imageRef;
+    }
   }
 
   const deployInput = {

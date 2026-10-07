@@ -35,9 +35,18 @@ inputs:
     description: 'Command used to install dependencies. Set to an empty string to skip.'
     required: false
     default: 'pnpm install --frozen-lockfile'
+  fusion-apps:
+    description: >
+      One FUSION image per line, written as '<image-name>: <dockerfile> [build-context]'.
+      Blank lines and # comments are ignored. The first entry is the image the
+      deployment references; the rest are recorded on the App so licence templates
+      can offer them. Leave empty to use the single-image inputs below.
+    required: false
+    default: ''
   fusion-dockerfile:
     description: >
       Path to a Dockerfile for a FUSION image. Leave empty to skip the image build/push.
+      A one-entry shorthand for fusion-apps, which takes precedence when both are set.
     required: false
     default: ''
   fusion-context:
@@ -94,6 +103,7 @@ runs:
         INPUT_RENOWN_URL: ${{ inputs.renown-url }}
         INPUT_PRODUCTION_BRANCH: ${{ inputs.production-branch }}
         INPUT_PACKAGE_DIRS: ${{ inputs.package-dirs }}
+        INPUT_FUSION_APPS: ${{ inputs.fusion-apps }}
         INPUT_FUSION_DOCKERFILE: ${{ inputs.fusion-dockerfile }}
         INPUT_FUSION_CONTEXT: ${{ inputs.fusion-context }}
         INPUT_FUSION_IMAGE_NAME: ${{ inputs.fusion-image-name }}
