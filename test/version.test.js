@@ -57,6 +57,8 @@ test('distTagForClassification', () => {
 });
 
 test('listPackageDirs parses newline- and space-separated lists', () => {
+  assert.deepEqual(listPackageDirs(''), []);
+  assert.deepEqual(listPackageDirs('   '), []);
   assert.deepEqual(listPackageDirs('.'), ['.']);
   assert.deepEqual(listPackageDirs('packages/a packages/b'), ['packages/a', 'packages/b']);
   assert.deepEqual(listPackageDirs('packages/a\npackages/b\n'), ['packages/a', 'packages/b']);

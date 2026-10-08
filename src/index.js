@@ -50,7 +50,10 @@ async function main() {
   const vetraUrl = env('INPUT_VETRA_URL', 'https://switchboard.vetra.io');
   const renownUrl = env('INPUT_RENOWN_URL', 'https://switchboard.renown.vetra.io');
   const productionBranch = env('INPUT_PRODUCTION_BRANCH', 'main');
-  const packageDirsInput = env('INPUT_PACKAGE_DIRS', '.');
+  // Not env(): an explicit empty string must mean "publish nothing" (as the
+  // input's documentation says), not fall back to the '.' default. action.yml
+  // always passes the input, so it is only undefined outside the action.
+  const packageDirsInput = process.env.INPUT_PACKAGE_DIRS ?? '.';
   const fusionDockerfile = env('INPUT_FUSION_DOCKERFILE', '');
   const fusionContext = env('INPUT_FUSION_CONTEXT', '.');
   const fusionImageName = env('INPUT_FUSION_IMAGE_NAME', 'app');
