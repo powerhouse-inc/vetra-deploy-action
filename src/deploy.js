@@ -10,7 +10,8 @@ import { appsCiBaseUrl, getJson, postJson } from './rest.js';
  * @param {{ fetchImpl?: typeof fetch }} [opts]
  */
 export async function fetchAppRegistryCredentials(vetraUrl, token, appId, opts) {
-  return postJson(`${appsCiBaseUrl(vetraUrl)}/registry-credentials`, token, { appId }, opts);
+  // Read-only despite the POST: safe to retry.
+  return postJson(`${appsCiBaseUrl(vetraUrl)}/registry-credentials`, token, { appId }, { retries: 4, ...opts });
 }
 
 /**
@@ -45,7 +46,7 @@ const TERMINAL_STATUSES = new Set(['READY', 'FAILED', 'SUPERSEDED']);
  * @param {{
  *   timeoutMinutes?: number, intervalMs?: number,
  *   sleep?: (ms: number) => Promise<void>, now?: () => number,
- *   fetchImpl?: typeof fetch,
+ *   fetchImpl?: typeof fetch, retrySleep?: (ms: number) => Promise<void>,
  * }} [opts]
  */
 export async function pollDeployment(vetraUrl, token, id, opts = {}) {
@@ -55,7 +56,7 @@ export async function pollDeployment(vetraUrl, token, id, opts = {}) {
 
   while (now() < deadline) {
     const current = typeof token === 'function' ? await token() : token;
-    last = await fetchAppDeployment(vetraUrl, current, id, { fetchImpl });
+    last = await fetchAppDeployment(vetraUrl, current, id, { fetchImpl, sleep: opts.retrySleep });
     if (last && TERMINAL_STATUSES.has(last.status)) return last;
     await sleep(intervalMs);
   }
