@@ -18,6 +18,7 @@ import { exchangeToken } from './exchange.js';
 import { publishPackage } from './publish.js';
 import { parseFusionApps } from './fusion-apps.js';
 import { buildFusionImages } from './images-step.js';
+import { withUnansweredRetry } from './fetch-retry.js';
 import { channelForClassification, recordArtifact } from './artifacts.js';
 import { deployApp, pollDeployment } from './deploy.js';
 import { appsAudience } from './rest.js';
@@ -46,6 +47,8 @@ function emptyOutputs() {
 }
 
 async function main() {
+  // See fetch-retry.js: a request after a long build can hit a dead keep-alive socket.
+  globalThis.fetch = withUnansweredRetry(globalThis.fetch);
   const appId = requireEnv('INPUT_APP_ID');
   const vetraUrl = env('INPUT_VETRA_URL', 'https://switchboard.vetra.io');
   const renownUrl = env('INPUT_RENOWN_URL', 'https://switchboard.renown.vetra.io');
