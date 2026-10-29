@@ -16,10 +16,10 @@ import { getPullRequestHeadSha } from './github-event.js';
 import { requestOidcToken } from './oidc.js';
 import { exchangeToken } from './exchange.js';
 import { publishPackage } from './publish.js';
-import { buildImageRef, buildAndPushImage } from './image.js';
 import { parseFusionApps } from './fusion-apps.js';
+import { buildFusionImages } from './images-step.js';
 import { channelForClassification, recordArtifact } from './artifacts.js';
-import { deployApp, fetchAppRegistryCredentials, pollDeployment } from './deploy.js';
+import { deployApp, pollDeployment } from './deploy.js';
 import { appsAudience } from './rest.js';
 import { createTokenSource } from './token-source.js';
 import { writeSummary } from './summary.js';
@@ -150,61 +150,22 @@ async function main() {
     }
   }
 
-  if (classification.kind === 'release') {
-    notice(`Vetra: published release ${classification.tagVersion} to ${distTag}; tags are publish-only in v1 (no deploy).`);
-    setOutput('deployment-id', '');
-    setOutput('environment-url', '');
-    setOutput('app-url', '');
-    setOutput('version', classification.tagVersion);
-    return;
-  }
-
+  // Built before a release returns: a release tag publishes its images too
+  // (channel LATEST), so a licence template can follow them.
   const fusionApps = parseFusionApps(fusionAppsInput, {
     dockerfile: fusionDockerfile,
     imageName: fusionImageName,
     context: fusionContext,
   });
+  const imageTag = await buildFusionImages({ fusionApps, vetraUrl, appsToken, appId, sha, sha12, runId, channel });
 
-  let imageTag = null;
-  if (fusionApps.length > 0) {
-    const creds = await fetchAppRegistryCredentials(vetraUrl, await appsToken(), appId);
-    mask(creds.password);
-    const registryHost = creds.registry.replace(/^https?:\/\//, '').replace(/\/+$/, '');
-
-    for (const app of fusionApps) {
-      const imageRef = buildImageRef({
-        registry: creds.registry,
-        project: creds.project,
-        imageName: app.name,
-        sha12,
-      });
-
-      buildAndPushImage({
-        dockerfile: app.dockerfile,
-        context: app.context,
-        imageRef,
-        buildArgs: { NEXT_DEPLOYMENT_ID: `sha-${sha12}` },
-        registryHost,
-        username: creds.username,
-        password: creds.password,
-      });
-
-      await recordArtifact(vetraUrl, await appsToken(), {
-        appId,
-        kind: 'FUSION_IMAGE',
-        name: app.name,
-        version: `sha-${sha12}`,
-        reference: imageRef,
-        commitSha: sha,
-        runId,
-        channel,
-      });
-
-      // The deployment still references ONE image. The first entry is the App's
-      // own service; the rest are recorded so a licence template can offer them.
-      // The full reference: the image name is the App's choice, not a backend default.
-      if (imageTag === null) imageTag = imageRef;
-    }
+  if (classification.kind === 'release') {
+    notice(`Vetra: published release ${classification.tagVersion} to ${distTag}; tags are publish-only (no deploy).`);
+    setOutput('deployment-id', '');
+    setOutput('environment-url', '');
+    setOutput('app-url', '');
+    setOutput('version', classification.tagVersion);
+    return;
   }
 
   const deployInput = {
