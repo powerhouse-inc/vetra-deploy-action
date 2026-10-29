@@ -81,3 +81,60 @@ test('postJson falls back to an HTTP-status message when the error body is not J
   });
   await assert.rejects(() => postJson('https://x/ci/deploy', 'tok', {}, { fetchImpl }), /HTTP 500/);
 });
+
+const noSleep = async () => {};
+const answer = (status, body) => ({ ok: status < 400, status, json: async () => body });
+
+test('getJson retries a request that got no answer, then returns the answer', async () => {
+  let calls = 0;
+  const fetchImpl = async () => {
+    calls += 1;
+    if (calls < 3) throw new TypeError('fetch failed');
+    return answer(200, { status: 'READY' });
+  };
+  const body = await getJson('https://x/ci/deployments/d1', 'tok', { fetchImpl, sleep: noSleep });
+  assert.deepEqual(body, { status: 'READY' });
+  assert.equal(calls, 3);
+});
+
+test('getJson retries a gateway 502 but not an API error', async () => {
+  let calls = 0;
+  const gateway = async () => {
+    calls += 1;
+    return calls === 1 ? { ok: false, status: 502, json: async () => { throw new Error('html'); } } : answer(200, {});
+  };
+  await getJson('https://x/a', 'tok', { fetchImpl: gateway, sleep: noSleep });
+  assert.equal(calls, 2);
+
+  let apiCalls = 0;
+  const notFound = async () => {
+    apiCalls += 1;
+    return answer(404, { error: 'NOT_FOUND', message: 'no deployment' });
+  };
+  await assert.rejects(getJson('https://x/a', 'tok', { fetchImpl: notFound, sleep: noSleep }), /NOT_FOUND/);
+  assert.equal(apiCalls, 1);
+});
+
+test('getJson gives up after the last retry', async () => {
+  let calls = 0;
+  const fetchImpl = async () => {
+    calls += 1;
+    throw new TypeError('fetch failed');
+  };
+  await assert.rejects(getJson('https://x/a', 'tok', { fetchImpl, sleep: noSleep }), /fetch failed/);
+  assert.equal(calls, 5);
+});
+
+test('postJson does not retry unless asked: a repeated /deploy could deploy twice', async () => {
+  let calls = 0;
+  const fetchImpl = async () => {
+    calls += 1;
+    throw new TypeError('fetch failed');
+  };
+  await assert.rejects(postJson('https://x/deploy', 'tok', {}, { fetchImpl, sleep: noSleep }), /fetch failed/);
+  assert.equal(calls, 1);
+
+  calls = 0;
+  await assert.rejects(postJson('https://x/creds', 'tok', {}, { fetchImpl, sleep: noSleep, retries: 2 }));
+  assert.equal(calls, 3);
+});

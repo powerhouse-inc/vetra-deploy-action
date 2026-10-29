@@ -32,7 +32,33 @@ export function formatApiError(body) {
   return `${code}: ${message}`;
 }
 
-async function request(method, url, token, body, fetchImpl) {
+/** Backoff before each retry of a request that never got an answer. */
+const RETRY_DELAYS_MS = [2_000, 5_000, 10_000, 20_000];
+
+/**
+ * A failure worth retrying: the request got no answer (undici's `fetch failed`
+ * TypeError: reset, DNS, timeout) or a gateway in front of the switchboard
+ * answered 502/503/504 while it restarts.
+ */
+function isTransient(err) {
+  return err instanceof TypeError || /failed: HTTP 50[234]$/.test(String(err?.message));
+}
+
+async function request(method, url, token, body, fetchImpl, retry = {}) {
+  const delays = retry.retries === 0 ? [] : RETRY_DELAYS_MS.slice(0, retry.retries ?? RETRY_DELAYS_MS.length);
+  const sleep = retry.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await requestOnce(method, url, token, body, fetchImpl);
+    } catch (err) {
+      if (attempt >= delays.length || !isTransient(err)) throw err;
+      console.log(`Vetra: ${method} ${url} failed (${err.message}); retrying in ${delays[attempt] / 1000}s.`);
+      await sleep(delays[attempt]);
+    }
+  }
+}
+
+async function requestOnce(method, url, token, body, fetchImpl) {
   const res = await fetchImpl(url, {
     method,
     headers: {
@@ -59,20 +85,29 @@ async function request(method, url, token, body, fetchImpl) {
 }
 
 /**
+ * POSTs are not retried unless the caller says the call is safe to repeat
+ * (`retries`): a retried /deploy could start a second deployment.
  * @param {string} url
  * @param {string} token
  * @param {object} body
- * @param {{ fetchImpl?: typeof fetch }} [opts]
+ * @param {{ fetchImpl?: typeof fetch, retries?: number, sleep?: (ms: number) => Promise<void> }} [opts]
  */
 export function postJson(url, token, body, opts = {}) {
-  return request('POST', url, token, body, opts.fetchImpl ?? fetch);
+  return request('POST', url, token, body, opts.fetchImpl ?? fetch, {
+    retries: opts.retries ?? 0,
+    sleep: opts.sleep,
+  });
 }
 
 /**
+ * GETs are retried on transient failures (see isTransient).
  * @param {string} url
  * @param {string} token
- * @param {{ fetchImpl?: typeof fetch }} [opts]
+ * @param {{ fetchImpl?: typeof fetch, retries?: number, sleep?: (ms: number) => Promise<void> }} [opts]
  */
 export function getJson(url, token, opts = {}) {
-  return request('GET', url, token, undefined, opts.fetchImpl ?? fetch);
+  return request('GET', url, token, undefined, opts.fetchImpl ?? fetch, {
+    retries: opts.retries,
+    sleep: opts.sleep,
+  });
 }

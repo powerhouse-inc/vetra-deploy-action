@@ -29,6 +29,7 @@ export function buildAndPushImage({ dockerfile, context, imageRef, buildArgs = {
   execCmd('docker', ['login', registryHost, '-u', username, '--password-stdin'], { input: password });
 
   const buildArgFlags = Object.entries(buildArgs).flatMap(([key, value]) => ['--build-arg', `${key}=${value}`]);
-  execCmd('docker', ['build', '-f', dockerfile, context, ...buildArgFlags, '-t', imageRef]);
-  execCmd('docker', ['push', imageRef]);
+  // Build and push print to the job log, so a slow or failing step shows where.
+  execCmd('docker', ['build', '-f', dockerfile, context, ...buildArgFlags, '-t', imageRef], { stdio: 'inherit' });
+  execCmd('docker', ['push', imageRef], { stdio: 'inherit' });
 }
