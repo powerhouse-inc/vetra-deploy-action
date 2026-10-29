@@ -125,16 +125,29 @@ test('getJson gives up after the last retry', async () => {
   assert.equal(calls, 5);
 });
 
-test('postJson does not retry unless asked: a repeated /deploy could deploy twice', async () => {
+test('postJson retries a request that got no answer, but never an HTTP error', async () => {
   let calls = 0;
-  const fetchImpl = async () => {
+  const staleSocket = async () => {
     calls += 1;
-    throw new TypeError('fetch failed');
+    if (calls === 1) throw new TypeError('fetch failed');
+    return answer(200, { id: 'd1' });
   };
-  await assert.rejects(postJson('https://x/deploy', 'tok', {}, { fetchImpl, sleep: noSleep }), /fetch failed/);
+  assert.deepEqual(await postJson('https://x/deploy', 'tok', {}, { fetchImpl: staleSocket, sleep: noSleep }), { id: 'd1' });
+  assert.equal(calls, 2);
+
+  calls = 0;
+  const gateway = async () => {
+    calls += 1;
+    return { ok: false, status: 502, json: async () => { throw new Error('html'); } };
+  };
+  await assert.rejects(postJson('https://x/deploy', 'tok', {}, { fetchImpl: gateway, sleep: noSleep }), /HTTP 502/);
   assert.equal(calls, 1);
 
   calls = 0;
-  await assert.rejects(postJson('https://x/creds', 'tok', {}, { fetchImpl, sleep: noSleep, retries: 2 }));
+  const down = async () => {
+    calls += 1;
+    throw new TypeError('fetch failed');
+  };
+  await assert.rejects(postJson('https://x/deploy', 'tok', {}, { fetchImpl: down, sleep: noSleep }), /fetch failed/);
   assert.equal(calls, 3);
 });

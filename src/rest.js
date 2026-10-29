@@ -41,7 +41,16 @@ const RETRY_DELAYS_MS = [2_000, 5_000, 10_000, 20_000];
  * answered 502/503/504 while it restarts.
  */
 function isTransient(err) {
-  return err instanceof TypeError || /failed: HTTP 50[234]$/.test(String(err?.message));
+  return isUnanswered(err) || /failed: HTTP 50[234]$/.test(String(err?.message));
+}
+
+/**
+ * The request got no answer at all. The common case after a long image build
+ * is a keep-alive socket the load balancer closed while it sat idle: the first
+ * request after the build fails on it without reaching the switchboard.
+ */
+function isUnanswered(err) {
+  return err instanceof TypeError;
 }
 
 async function request(method, url, token, body, fetchImpl, retry = {}) {
@@ -51,7 +60,8 @@ async function request(method, url, token, body, fetchImpl, retry = {}) {
     try {
       return await requestOnce(method, url, token, body, fetchImpl);
     } catch (err) {
-      if (attempt >= delays.length || !isTransient(err)) throw err;
+      const retryable = retry.unansweredOnly ? isUnanswered(err) : isTransient(err);
+      if (attempt >= delays.length || !retryable) throw err;
       console.log(`Vetra: ${method} ${url} failed (${err.message}); retrying in ${delays[attempt] / 1000}s.`);
       await sleep(delays[attempt]);
     }
@@ -85,8 +95,10 @@ async function requestOnce(method, url, token, body, fetchImpl) {
 }
 
 /**
- * POSTs are not retried unless the caller says the call is safe to repeat
- * (`retries`): a retried /deploy could start a second deployment.
+ * POSTs are retried only when they got no answer at all (see isUnanswered),
+ * never on an HTTP error. A repeat is harmless for the CI API's POSTs: an
+ * artifact version is recorded once, and a second /deploy of the same commit
+ * supersedes the first.
  * @param {string} url
  * @param {string} token
  * @param {object} body
@@ -94,7 +106,8 @@ async function requestOnce(method, url, token, body, fetchImpl) {
  */
 export function postJson(url, token, body, opts = {}) {
   return request('POST', url, token, body, opts.fetchImpl ?? fetch, {
-    retries: opts.retries ?? 0,
+    retries: opts.retries ?? 2,
+    unansweredOnly: true,
     sleep: opts.sleep,
   });
 }
