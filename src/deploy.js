@@ -10,8 +10,7 @@ import { appsCiBaseUrl, getJson, postJson } from './rest.js';
  * @param {{ fetchImpl?: typeof fetch }} [opts]
  */
 export async function fetchAppRegistryCredentials(vetraUrl, token, appId, opts) {
-  // Read-only despite the POST: safe to retry.
-  return postJson(`${appsCiBaseUrl(vetraUrl)}/registry-credentials`, token, { appId }, { retries: 4, ...opts });
+  return postJson(`${appsCiBaseUrl(vetraUrl)}/registry-credentials`, token, { appId }, opts);
 }
 
 /**
